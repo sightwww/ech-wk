@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ECH Workers 客户端 - Mac 版本 (Python + PyQt5)
+ECH Workers 客户端 - 跨平台版本 (Python + PyQt5)
+支持 Windows 和 macOS
 """
 
 import sys
@@ -34,7 +35,17 @@ class ConfigManager:
     """配置管理器"""
     
     def __init__(self):
-        self.config_dir = Path.home() / "Library" / "Application Support" / "ECHWorkersClient"
+        # 跨平台配置文件路径
+        if sys.platform == 'win32':
+            # Windows: %APPDATA%\ECHWorkersClient
+            self.config_dir = Path(os.getenv('APPDATA', Path.home())) / "ECHWorkersClient"
+        else:
+            # macOS/Linux: ~/Library/Application Support/ECHWorkersClient 或 ~/.config/ECHWorkersClient
+            if sys.platform == 'darwin':
+                self.config_dir = Path.home() / "Library" / "Application Support" / "ECHWorkersClient"
+            else:
+                self.config_dir = Path.home() / ".config" / "ECHWorkersClient"
+        
         self.config_file = self.config_dir / "config.json"
         self.config_dir.mkdir(parents=True, exist_ok=True)
         self.servers = []
@@ -189,48 +200,67 @@ class ProcessThread(QThread):
                 self.process.kill()
     
     def _find_executable(self):
-        """查找可执行文件"""
+        """查找可执行文件（跨平台）"""
         # 脚本所在目录
         script_dir = Path(__file__).parent.absolute()
         # 当前工作目录
         current_dir = Path.cwd()
         
+        # Windows 和 Unix 的可执行文件扩展名
+        exe_ext = '.exe' if sys.platform == 'win32' else ''
+        
         # 可能的可执行文件路径（按优先级）
         possible_paths = [
-            script_dir / 'ech-workers',
-            script_dir / 'ech-workers.exe',
-            current_dir / 'ech-workers',
-            current_dir / 'ech-workers.exe',
-            # 尝试查找编译后的文件
-            script_dir / 'ech-workers-gui.exe',  # Windows 编译版本
-            script_dir / 'build' / 'ech-workers',  # 可能的构建目录
+            script_dir / f'ech-workers{exe_ext}',
+            current_dir / f'ech-workers{exe_ext}',
+            # Windows 特定路径
+            script_dir / 'ech-workers.exe' if sys.platform == 'win32' else None,
+            current_dir / 'ech-workers.exe' if sys.platform == 'win32' else None,
+            # Unix 路径（无扩展名）
+            script_dir / 'ech-workers' if sys.platform != 'win32' else None,
+            current_dir / 'ech-workers' if sys.platform != 'win32' else None,
         ]
+        
+        # 过滤掉 None 值
+        possible_paths = [p for p in possible_paths if p is not None]
         
         for path in possible_paths:
             if path.exists():
-                # 检查是否是真正的可执行文件（不是文本文件）
-                try:
-                    # 尝试读取文件头，检查是否是二进制文件
-                    with open(path, 'rb') as f:
-                        header = f.read(4)
-                        # 检查是否是 ELF、Mach-O 或 PE 可执行文件
-                        is_binary = header.startswith(b'\x7fELF') or \
-                                   header.startswith(b'\xfe\xed\xfa') or \
-                                   header.startswith(b'MZ') or \
-                                   header.startswith(b'#!')  # 脚本文件
-                    
-                    if is_binary or os.access(path, os.X_OK):
-                        # 如果是脚本文件，尝试添加执行权限
-                        if not os.access(path, os.X_OK) and header.startswith(b'#!'):
-                            try:
-                                os.chmod(path, 0o755)
-                            except:
-                                pass
+                # Windows: 检查文件是否存在即可（.exe 文件）
+                # Unix: 检查文件权限
+                if sys.platform == 'win32':
+                    # Windows 上，.exe 文件可以直接运行
+                    if path.suffix.lower() == '.exe':
                         return str(path)
-                except:
-                    # 如果读取失败，至少检查执行权限
+                    # 或者检查文件是否可执行
+                    try:
+                        with open(path, 'rb') as f:
+                            header = f.read(2)
+                            # PE 文件头
+                            if header == b'MZ':
+                                return str(path)
+                    except:
+                        pass
+                else:
+                    # Unix/Linux/macOS: 检查执行权限
                     if os.access(path, os.X_OK):
                         return str(path)
+                    # 或者检查是否是二进制文件
+                    try:
+                        with open(path, 'rb') as f:
+                            header = f.read(4)
+                            # ELF 或 Mach-O
+                            if (header.startswith(b'\x7fELF') or 
+                                header.startswith(b'\xfe\xed\xfa') or
+                                header.startswith(b'#!')):
+                                # 尝试添加执行权限
+                                try:
+                                    os.chmod(path, 0o755)
+                                except:
+                                    pass
+                                return str(path)
+                    except:
+                        pass
         
         # 尝试从 PATH 中查找
         import shutil
@@ -238,7 +268,7 @@ class ProcessThread(QThread):
         if exe:
             return exe
         
-        # 如果都找不到，返回 None 并显示详细错误
+        # 如果都找不到，返回 None
         return None
 
 
@@ -523,8 +553,119 @@ class MainWindow(QMainWindow):
     
     def on_auto_start_changed(self):
         """开机启动改变"""
-        # 简化版本，不实现开机启动
-        pass
+        enabled = self.auto_start_check.isChecked()
+        if self._set_auto_start(enabled):
+            self.append_log(f"[系统] {'已设置' if enabled else '已取消'}开机启动\n")
+        else:
+            self.auto_start_check.setChecked(not enabled)
+            QMessageBox.warning(self, "错误", "设置开机启动失败")
+    
+    def _set_auto_start(self, enabled):
+        """设置开机启动（跨平台）"""
+        try:
+            if sys.platform == 'win32':
+                # Windows: 使用注册表
+                import winreg
+                key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+                app_name = "ECHWorkersClient"
+                
+                if enabled:
+                    # 获取当前脚本路径
+                    script_path = Path(__file__).absolute()
+                    python_path = sys.executable
+                    # 创建启动命令
+                    cmd = f'"{python_path}" "{script_path}"'
+                    
+                    try:
+                        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE)
+                        winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, cmd)
+                        winreg.CloseKey(key)
+                        return True
+                    except Exception as e:
+                        print(f"设置开机启动失败: {e}")
+                        return False
+                else:
+                    try:
+                        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE)
+                        winreg.DeleteValue(key, app_name)
+                        winreg.CloseKey(key)
+                        return True
+                    except FileNotFoundError:
+                        # 如果值不存在，也算成功
+                        return True
+                    except Exception as e:
+                        print(f"删除开机启动失败: {e}")
+                        return False
+            else:
+                # macOS/Linux: 使用 LaunchAgents 或 systemd
+                if sys.platform == 'darwin':
+                    # macOS
+                    plist_path = Path.home() / "Library" / "LaunchAgents" / "com.echworkers.client.plist"
+                    if enabled:
+                        script_path = Path(__file__).absolute()
+                        python_path = sys.executable
+                        plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.echworkers.client</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{python_path}</string>
+        <string>{script_path}</string>
+        <string>-autostart</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+</dict>
+</plist>"""
+                        try:
+                            plist_path.parent.mkdir(parents=True, exist_ok=True)
+                            with open(plist_path, 'w') as f:
+                                f.write(plist_content)
+                            return True
+                        except Exception as e:
+                            print(f"创建启动项失败: {e}")
+                            return False
+                    else:
+                        try:
+                            if plist_path.exists():
+                                plist_path.unlink()
+                            return True
+                        except Exception as e:
+                            print(f"删除启动项失败: {e}")
+                            return False
+                else:
+                    # Linux: 使用 systemd user service（简化实现）
+                    return False  # Linux 暂不支持
+        except Exception as e:
+            print(f"设置开机启动失败: {e}")
+            return False
+    
+    def _is_auto_start_enabled(self):
+        """检查是否已启用开机启动"""
+        try:
+            if sys.platform == 'win32':
+                import winreg
+                key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+                app_name = "ECHWorkersClient"
+                try:
+                    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ)
+                    winreg.QueryValueEx(key, app_name)
+                    winreg.CloseKey(key)
+                    return True
+                except FileNotFoundError:
+                    return False
+            elif sys.platform == 'darwin':
+                plist_path = Path.home() / "Library" / "LaunchAgents" / "com.echworkers.client.plist"
+                return plist_path.exists()
+            else:
+                return False
+        except:
+            return False
     
     def clear_log(self):
         """清空日志"""
@@ -540,6 +681,10 @@ class MainWindow(QMainWindow):
             cursor.movePosition(cursor.Down, cursor.MoveAnchor, 100)
             cursor.movePosition(cursor.Start, cursor.KeepAnchor)
             cursor.removeSelectedText()
+    
+    def update_auto_start_checkbox(self):
+        """更新开机启动复选框状态"""
+        self.auto_start_check.setChecked(self._is_auto_start_enabled())
     
     def auto_start(self):
         """自动启动"""
