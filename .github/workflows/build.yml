@@ -27,6 +27,7 @@ jobs:
             target: desktop
             artifact_suffix: ""
             enable_gui: true
+            cgo_enabled: "0"
 
           - os: macos-15-intel
             goos: darwin
@@ -37,6 +38,7 @@ jobs:
             target: desktop
             artifact_suffix: ""
             enable_gui: true
+            cgo_enabled: "0"
 
           - os: macos-14
             goos: darwin
@@ -47,8 +49,9 @@ jobs:
             target: desktop
             artifact_suffix: ""
             enable_gui: true
+            cgo_enabled: "0"
 
-          # Linux 桌面版（原来的）
+          # Linux 桌面版 amd64
           - os: ubuntu-latest
             goos: linux
             goarch: amd64
@@ -58,8 +61,9 @@ jobs:
             target: desktop
             artifact_suffix: ""
             enable_gui: true
-            cgo_enabled: "1"
+            cgo_enabled: "0"
 
+          # Linux 桌面版 arm64
           - os: ubuntu-24.04-arm
             goos: linux
             goarch: arm64
@@ -69,9 +73,9 @@ jobs:
             target: desktop
             artifact_suffix: ""
             enable_gui: true
-            cgo_enabled: "1"
+            cgo_enabled: "0"
 
-          # ✅ 新增：Linux amd64 软路由版（OpenWrt / iStoreOS 等）
+          # ✅ 软路由 x86_64（无 GUI，静态构建）
           - os: ubuntu-latest
             goos: linux
             goarch: amd64
@@ -80,8 +84,20 @@ jobs:
             archive_ext: .tar.gz
             target: softrouter
             artifact_suffix: "-softrouter"
-            enable_gui: false   # 路由器上一般不跑 GUI
-            cgo_enabled: "0"    # 尽量静态，方便在各种 musl 系统上跑
+            enable_gui: false
+            cgo_enabled: "0"
+
+          # ✅ 软路由 arm64（RK3588 / 树莓派等）
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            exe_ext: ""
+            archive_format: tar.gz
+            archive_ext: .tar.gz
+            target: softrouter
+            artifact_suffix: "-softrouter"
+            enable_gui: false
+            cgo_enabled: "0"
 
     runs-on: ${{ matrix.os }}
     
@@ -104,13 +120,13 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: ${{ matrix.cgo_enabled || '1' }}
+          CGO_ENABLED: ${{ matrix.cgo_enabled }}
         run: |
           echo "Building for $GOOS/$GOARCH (target=${{ matrix.target }}, CGO_ENABLED=$CGO_ENABLED)"
           go build -trimpath -ldflags="-s -w" -o ech-workers${{ matrix.exe_ext }} ech-workers.go
         shell: bash
 
-      # 下面这几个步骤：只有打 tag + 且当前目标允许 GUI 时才跑
+      # 下面这些步骤：只有打 tag 且 enable_gui == true 时才会执行，用来打包 GUI
 
       - name: Set up Python
         if: startsWith(github.ref, 'refs/tags/') && matrix.enable_gui == true
@@ -132,10 +148,9 @@ jobs:
           if [ "${{ matrix.goos }}" == "linux" ]; then
             # Linux: 使用系统包中的 PyQt5，只安装其他依赖
             pip install pyinstaller pystray Pillow
-            # 验证 PyQt5 是否可用
             python -c "import PyQt5.QtWidgets; print('PyQt5 available')" || echo "PyQt5 not available, will skip GUI build"
           else
-            # Windows 和 macOS: 从 PyPI 安装
+            # Windows / macOS: 从 PyPI 安装
             pip install pyinstaller PyQt5 pystray Pillow
           fi
         shell: bash
@@ -162,10 +177,10 @@ jobs:
         run: |
           mkdir -p release
           
-          # 复制 Go 可执行文件
+          # Go 可执行文件
           cp ech-workers${{ matrix.exe_ext }} release/
           
-          # 复制 Python 打包后的可执行文件（仅桌面版）
+          # GUI（仅桌面版）
           if [ "${{ matrix.enable_gui }}" = "true" ]; then
             if [ "${{ matrix.goos }}" == "windows" ]; then
               if [ -f "dist/ECHWorkersGUI.exe" ]; then
@@ -181,7 +196,7 @@ jobs:
             fi
           fi
           
-          # 创建 README
+          # README
           {
             echo "ECH Workers Client"
             echo ""
@@ -215,7 +230,7 @@ jobs:
             echo ""
             echo "System Requirements:"
             if [ "${{ matrix.target }}" = "softrouter" ]; then
-              echo "- Linux soft router / NAS (OpenWrt / iStoreOS / x86_64)"
+              echo "- Linux soft router / NAS (OpenWrt / iStoreOS / x86_64 or ARM64)"
               echo "- Architecture: ${{ matrix.goarch }}"
               echo "- Recommended: run from SSH / shell"
             else
@@ -228,7 +243,7 @@ jobs:
                 echo "- Architecture: ${{ matrix.goarch }}"
               fi
             fi
-            echo "- No Python installation required (standalone executables)"
+            echo "- No Python installation required for running the binaries"
           } > release/README.txt
         shell: bash
 
